@@ -1,0 +1,7 @@
+# Cài bằng: pip install -r requirements.txt
+psutil>=5.9        # Agent: đọc CPU/RAM/Disk
+pytest>=8.0        # Chạy test
+# Chọn 1 cho Dashboard (nhóm thống nhất ở họp ngày 1, bỏ dấu # dòng được chọn):
+# flask>=3.0
+# PyQt5>=5.15
+# matplotlib>=3.8
