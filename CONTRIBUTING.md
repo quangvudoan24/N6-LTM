@@ -1,29 +1,65 @@
-# Quy tắc làm việc với Git
+Quy tắc làm việc với Git – N6-LTM
 
-## Nhánh (branch)
-- `main`: luôn chạy được, **cấm push trực tiếp**.
-- Mỗi người làm trên nhánh riêng: `feature/<tên>-<việc>`
-  - Ví dụ: `feature/dung-tcp-server`, `feature/vu-dashboard-wireframe`
+1. Quy tắc nhánh (Branch)
 
-## Quy trình mỗi ngày
-```bash
-git checkout main && git pull            # 1. lấy code mới nhất
-git checkout -b feature/ten-viec         # 2. tạo nhánh (lần đầu)
-# ... làm việc ...
+* main: Chứa phiên bản chính thức của dự án. Không push trực tiếp lên nhánh này.
+* Mỗi thành viên làm việc trên một branch riêng.
+* Đặt tên branch theo nhiệm vụ, ví dụ:
+    * feature/agent-data
+    * feature/agent-tcp
+    * feature/tcp-server
+    * feature/database
+    * feature/tests
+    * feature/dashboard
+
+2. Quy trình làm việc
+
+Bước 1: Cập nhật code mới nhất
+
+git checkout main
+git pull origin main
+
+Bước 2: Chuyển sang branch của mình
+
+git checkout feature/agent-data
+
+Bước 3: Sau khi hoàn thành công việc
+
 git add .
-git commit -m "feat(server): them ham accept nhieu client"
-git push -u origin feature/ten-viec      # 3. đẩy lên
-# 4. Lên GitHub/GitLab tạo Pull Request -> nhóm trưởng duyệt -> merge
-```
+git commit -m "feat: mo ta cong viec"
+git push -u origin feature/agent-data
 
-## Quy ước commit
-`<loại>(<phạm vi>): <mô tả ngắn>`
-- Loại: `feat` (tính năng), `fix` (sửa lỗi), `docs` (tài liệu), `test`, `refactor`
-- Phạm vi: `server`, `agent`, `db`, `dashboard`, `common`, `docs`
+Thay feature/agent-data bằng branch của thành viên tương ứng.
 
-## Quy tắc vàng
-1. Không hard-code port/timeout/tên trạng thái -> dùng `common/constants.py`.
-2. Không tự đổi định dạng tin nhắn / schema -> sửa tài liệu + Pull Request + báo nhóm.
-3. Không commit `.env`, `*.db`, `__pycache__`.
-4. Commit nhỏ, thường xuyên; trước khi push chạy `pytest`.
-5. Code Python theo PEP8: tên hàm/biến `snake_case`, hằng số `UPPER_CASE`, class `PascalCase`.
+Bước 4: Gửi Pull Request (PR)
+
+Tạo Pull Request trên GitHub để nhóm kiểm tra. Chỉ gộp vào main sau khi được xem xét và chấp thuận.
+
+3. Quy ước commit
+
+Sử dụng các tiền tố sau:
+
+* feat: Thêm chức năng mới.
+* fix: Sửa lỗi.
+* docs: Cập nhật tài liệu.
+* test: Thêm hoặc chỉnh sửa kiểm thử.
+* refactor: Tổ chức lại code.
+
+Ví dụ:
+
+git commit -m "docs: update database design"
+
+4. Quy tắc viết code
+
+1. Không hard-code port, IP hoặc tên trạng thái nếu có thể cấu hình riêng.
+2. Đặt tên biến và hàm rõ ràng, thống nhất.
+3. Không commit các file .env, *.db, __pycache__/ hoặc thông tin bí mật.
+4. Kiểm tra code trước khi push.
+5. Viết Python theo quy ước PEP 8.
+
+5. Nguyên tắc chung
+
+* Làm đúng nhiệm vụ đã được giao trên GitHub Issues.
+* Cập nhật tiến độ khi hoàn thành công việc.
+* Không tự ý sửa hoặc xóa code của thành viên khác.
+* Trao đổi với nhóm khi thay đổi ảnh hưởng đến các thành phần khác.
