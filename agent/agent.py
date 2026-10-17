@@ -4,6 +4,7 @@ AGENT - TV2 (Hải Huỳnh) lo kết nối/reconnect, TV3 (Thành Công) lo hear
 """
 import socket
 import platform
+import psutil
 
 from common.constants import DEFAULT_SERVER_ADDR, SERVER_PORT, HEARTBEAT_INTERVAL, RECONNECT_DELAYS
 from common.protocol import encode, make_register, make_heartbeat, make_metrics
@@ -21,7 +22,15 @@ def heartbeat_loop(sock, agent_id):
 
 def collect_metrics():
     """TODO: dùng psutil lấy cpu_percent, virtual_memory().percent, disk_usage('/').percent."""
-    pass
+    cpu = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory().percent
+    disk = psutil.disk_usage("C:\\").percent
+
+    return {
+        "cpu": cpu,
+        "ram": ram,
+        "disk": disk
+    }
 
 
 def main():
