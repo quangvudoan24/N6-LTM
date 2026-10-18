@@ -4,6 +4,7 @@ AGENT - TV2 (Hải Huỳnh) lo kết nối/reconnect, TV3 (Thành Công) lo hear
 """
 import socket
 import platform
+import time
 
 from common.constants import DEFAULT_SERVER_ADDR, SERVER_PORT, HEARTBEAT_INTERVAL, RECONNECT_DELAYS
 from common.protocol import encode, make_register, make_heartbeat, make_metrics
@@ -15,8 +16,13 @@ def connect_with_retry(host, port):
 
 
 def heartbeat_loop(sock, agent_id):
-    """TODO (TV3): mỗi HEARTBEAT_INTERVAL giây gửi make_heartbeat(agent_id)."""
-    pass
+    """Gửi heartbeat ngay sau khi được gọi, rồi gửi lại theo chu kỳ cấu hình.
+
+    Lỗi socket được để truyền lên tầng gọi để phần kết nối/reconnect của TV2 xử lý.
+    """
+    while True:
+        sock.sendall(encode(make_heartbeat(agent_id)))
+        time.sleep(HEARTBEAT_INTERVAL)
 
 
 def collect_metrics():
