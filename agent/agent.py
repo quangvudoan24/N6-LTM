@@ -24,17 +24,12 @@ def collect_metrics():
     """TODO: dùng psutil lấy cpu_percent, virtual_memory().percent, disk_usage('/').percent."""
     cpu = psutil.cpu_percent(interval=1)
     ram = psutil.virtual_memory().percent
-    disk = psutil.disk_usage("C:\\")
+    disk = psutil.disk_usage("C:\\").percent
 
     return {
         "cpu": cpu,
         "ram": ram,
-        "disk": {
-            "total_gb": round(disk.total / (1024 ** 3), 2),
-            "used_gb": round(disk.used / (1024 ** 3), 2),
-            "free_gb": round(disk.free / (1024 ** 3), 2),
-            "percent": disk.percent
-        }
+        "disk": disk
     }
 
 def main():
@@ -52,3 +47,5 @@ def main():
     print(json_data)
 if __name__ == "__main__":
     main()
+
+# python -m agent.agent
