@@ -24,19 +24,31 @@ def collect_metrics():
     """TODO: dùng psutil lấy cpu_percent, virtual_memory().percent, disk_usage('/').percent."""
     cpu = psutil.cpu_percent(interval=1)
     ram = psutil.virtual_memory().percent
-    disk = psutil.disk_usage("C:\\").percent
+    disk = psutil.disk_usage("C:\\")
 
     return {
         "cpu": cpu,
         "ram": ram,
-        "disk": disk
+        "disk": {
+            "total_gb": round(disk.total / (1024 ** 3), 2),
+            "used_gb": round(disk.used / (1024 ** 3), 2),
+            "free_gb": round(disk.free / (1024 ** 3), 2),
+            "percent": disk.percent
+        }
     }
-
 
 def main():
     print(f"Agent chạy trên {platform.node()} ({platform.system()})")
     # TODO: connect -> gửi REGISTER -> chờ ACK -> chạy heartbeat + metrics
 
-
+    data = collect_metrics()
+    message = make_metrics(
+        "agent 01",
+        data["cpu"],
+        data["ram"],
+        data["disk"]
+    )
+    json_data = encode(message).decode("utf-8")
+    print(json_data)
 if __name__ == "__main__":
     main()
