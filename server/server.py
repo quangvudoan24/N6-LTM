@@ -48,6 +48,7 @@ def _validate_message(message: dict, registered_agent_id: Optional[str]) -> str:
     message_type = message["type"]  # decode() already checks required fields/type.
     agent_id = _require_non_empty_string(message, "agent_id")
 
+    # REGISTER gắn mã Agent với kết nối; các bản tin sau phải dùng cùng agent_id.
     if message_type == MsgType.REGISTER:
         for field in ("hostname", "ip", "os"):
             _require_non_empty_string(message, field)
@@ -60,6 +61,7 @@ def _validate_message(message: dict, registered_agent_id: Optional[str]) -> str:
     if agent_id != registered_agent_id:
         raise ProtocolError("agent_id không khớp với REGISTER trên kết nối này")
 
+    # HEARTBEAT cần timestamp; METRICS kiểm tra thêm các tỷ lệ tài nguyên.
     if message_type == MsgType.HEARTBEAT:
         _require_timestamp(message)
     elif message_type == MsgType.METRICS:
@@ -104,6 +106,7 @@ def _process_message(
     received_at = now()
     if message_handler is not None:
         try:
+            # Chuyển bản tin hợp lệ cho callback xử lý trước khi xác nhận bằng ACK.
             message_handler(dict(message), addr, received_at)
         except Exception:
             logger.exception("Callback xử lý bản tin thất bại từ %s", addr)
@@ -153,6 +156,7 @@ def handle_client(
             if not data:
                 break
 
+            # Giữ mảnh chưa có newline cho lần recv sau, rồi tách từng frame hoàn chỉnh.
             pending.extend(data)
             while True:
                 delimiter_index = pending.find(MESSAGE_DELIMITER)
@@ -191,6 +195,7 @@ def handle_client(
         logger.info("Agent ngắt kết nối: %s", addr)
 
 
+# Mỗi kết nối chạy riêng để Agent chậm không chặn vòng lặp nhận kết nối.
 class _ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
