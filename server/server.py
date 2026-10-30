@@ -172,6 +172,13 @@ def handle_client(
                     if not _send_error(conn, str(exc)):
                         return
                     continue
+                except (TypeError, ValueError) as exc:
+                    # The shared decoder's lookup assumes ``type`` is a
+                    # string. JSON can still contain arrays/objects there.
+                    logger.info("Trường type không hợp lệ từ %s: %s", addr, exc)
+                    if not _send_error(conn, "Trường 'type' không hợp lệ"):
+                        return
+                    continue
 
                 for message in messages:
                     alive, registered_agent_id = _process_message(

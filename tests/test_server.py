@@ -106,6 +106,19 @@ def test_invalid_json_and_missing_fields_return_errors_without_losing_next_frame
             assert read_response(reader)["type"] == MsgType.ACK
 
 
+def test_json_with_non_string_type_returns_error_and_connection_recovers():
+    with running_server() as server:
+        sock, reader = connect(server)
+        with sock, reader:
+            sock.sendall(b'{"type":[]}\n' + encode(
+                make_register("A", "host", "127.0.0.1", "Windows")
+            ))
+            error = read_response(reader)
+            assert error["type"] == MsgType.ERROR
+            assert "type" in error["message"]
+            assert read_response(reader)["type"] == MsgType.ACK
+
+
 @pytest.mark.parametrize(
     "message",
     [
