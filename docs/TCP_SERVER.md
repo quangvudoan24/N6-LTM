@@ -34,3 +34,8 @@ pytest -q tests/test_protocol.py tests/test_server.py
 ```
 
 Các kiểm thử server dùng cổng loopback động (`port=0`), bao gồm ACK/ERROR, bản tin phân mảnh và nối tiếp, xác thực trường, callback và nhiều Agent đồng thời.
+
+### Kết quả kiểm chứng local
+
+- `python -m pytest -q -p no:cacheprovider tests` — **18 passed**.
+- Khởi tạo `create_server()` không tham số — bind thành công tại `('0.0.0.0', 9000)`.
