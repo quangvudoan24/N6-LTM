@@ -1,5 +1,7 @@
 import json
+import os
 import socket
+import struct
 import threading
 from contextlib import contextmanager
 
@@ -192,8 +194,27 @@ def test_multiple_agents_are_served_concurrently():
 
 def test_disconnect_does_not_prevent_server_from_serving_another_client():
     with running_server() as server:
-        disconnected, _ = connect(server)
+        disconnected, reader = connect(server)
+        reader.close()
         disconnected.close()
+
+        sock, reader = connect(server)
+        with sock, reader:
+            sock.sendall(encode(make_register("B", "host", "127.0.0.1", "Windows")))
+            assert read_response(reader)["type"] == MsgType.ACK
+
+
+def test_socket_reset_does_not_prevent_server_from_serving_another_client():
+    with running_server() as server:
+        reset_sock, reader = connect(server)
+        reset_sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
+        assert read_response(reader)["type"] == MsgType.ACK
+
+        # SO_LINGER with a zero timeout closes with RST rather than FIN.
+        linger = struct.pack("hh", 1, 0) if os.name == "nt" else struct.pack("ii", 1, 0)
+        reset_sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        reader.close()
+        reset_sock.close()
 
         sock, reader = connect(server)
         with sock, reader:
