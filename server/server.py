@@ -1,6 +1,5 @@
 """TCP server for the N6-LTM Agent protocol."""
 import logging
-import math
 import socket
 import socketserver
 from typing import Callable, Optional, Tuple
@@ -69,9 +68,7 @@ def _validate_message(message: dict, registered_agent_id: Optional[str]) -> str:
             value = message.get(field)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ProtocolError(f"Trường '{field}' phải là số từ 0 đến 100")
-            if not 0 <= value <= 100 or (
-                isinstance(value, float) and not math.isfinite(value)
-            ):
+            if not 0 <= value <= 100:
                 raise ProtocolError(f"Trường '{field}' phải nằm trong khoảng 0–100")
     else:
         # decode() rejects unsupported types, but keep this guard at the
@@ -172,7 +169,7 @@ def handle_client(
                     if not _send_error(conn, str(exc)):
                         return
                     continue
-                except (TypeError, ValueError) as exc:
+                except TypeError as exc:
                     # The shared decoder's lookup assumes ``type`` is a
                     # string. JSON can still contain arrays/objects there.
                     logger.info("Trường type không hợp lệ từ %s: %s", addr, exc)
@@ -229,7 +226,6 @@ def monitor_loop() -> None:
 def main() -> None:
     server = create_server()
     logger.info("TCP Server đang lắng nghe tại %s:%s", *server.server_address)
-    print(f"TCP Server đang lắng nghe tại {SERVER_HOST}:{SERVER_PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

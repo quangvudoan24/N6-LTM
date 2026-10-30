@@ -16,7 +16,7 @@ from common.protocol import (
     make_metrics,
     make_register,
 )
-from server.server import create_server
+from server.server import create_server, handle_client
 
 
 @contextmanager
@@ -75,14 +75,31 @@ def test_register_heartbeat_and_metrics_are_acked_and_handed_off():
         assert all(row[1][0] == "127.0.0.1" for row in received)
 
 
-def test_fragmented_and_concatenated_frames_are_processed_in_order():
+def test_fragmented_frames_across_recv_calls_are_reassembled():
+    register = encode(make_register("A", "host", "127.0.0.1", "Windows"))
+    chunks = [register[:10], register[10:] + encode(make_heartbeat("A"))]
+    responses = []
+
+    class ChunkedConnection:
+        def recv(self, size):
+            return chunks.pop(0) if chunks else b""
+
+        def sendall(self, data):
+            responses.append(data)
+
+    handle_client(ChunkedConnection(), ("127.0.0.1", 12345))
+
+    assert [decode(response.rstrip(b"\n"))["type"] for response in responses] == [
+        MsgType.ACK,
+        MsgType.ACK,
+    ]
+
+
+def test_concatenated_frames_are_processed_in_order():
     with running_server() as server:
         sock, reader = connect(server)
         with sock, reader:
-            register = encode(make_register("A", "host", "127.0.0.1", "Windows"))
-            split_at = len(register) // 2
-            sock.sendall(register[:split_at])
-            sock.sendall(register[split_at:])
+            sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
             assert read_response(reader)["type"] == MsgType.ACK
 
             # Multiple protocol frames sent in one TCP write.
