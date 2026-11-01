@@ -11,10 +11,10 @@ Chủ sở hữu: TV1 + TV2. Muốn đổi -> Pull Request + báo cả nhóm.
 | type | Hướng | Trường bắt buộc | Khi nào gửi |
 |---|---|---|---|
 | REGISTER | Agent → Server | agent_id, hostname, ip, os | Ngay sau khi kết nối |
-| ACK | Server → Agent | status | Phản hồi REGISTER |
+| ACK | Server → Agent | status | Phản hồi mỗi tin nhắn hợp lệ (REGISTER, HEARTBEAT, METRICS) |
 | HEARTBEAT | Agent → Server | agent_id, timestamp | Mỗi 5s |
 | METRICS | Agent → Server | agent_id, cpu, ram, disk, timestamp | Mỗi 5s |
-| ERROR | Server → Agent | message | Khi tin nhắn sai |
+| ERROR | Server → Agent | message | Khi tin nhắn sai (JSON hỏng, thiếu trường, giá trị ngoài khoảng, chưa REGISTER, lỗi lưu DB). Kết nối vẫn được giữ |
 
 ## Ví dụ
 ```json
