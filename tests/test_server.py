@@ -1,239 +1,219 @@
+"""Test Server bằng socket thật trên cổng ngẫu nhiên (không đụng cổng 9000)."""
 import json
-import os
 import socket
-import struct
 import threading
-from contextlib import contextmanager
 
 import pytest
 
-from common.constants import SERVER_HOST, SERVER_PORT
-from common.protocol import (
-    MsgType,
-    decode,
-    encode,
-    make_heartbeat,
-    make_metrics,
-    make_register,
-)
-from server.server import create_server, handle_client
+from common.constants import MsgType
+from common.protocol import encode, make_heartbeat, make_metrics, make_register
+from server import server as srv
 
 
-@contextmanager
-def running_server(message_handler=None):
-    server = create_server("127.0.0.1", 0, message_handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+class FakeStorage:
+    def __init__(self):
+        self.agents, self.metrics, self.touches = [], [], []
+        self.fail = False
+
+    def _check(self):
+        if self.fail:
+            raise RuntimeError("DB hỏng")
+
+    def save_agent(self, *args):
+        self._check()
+        self.agents.append(args)
+
+    def save_metrics(self, *args):
+        self._check()
+        self.metrics.append(args)
+
+    def touch_agent(self, *args):
+        self._check()
+        self.touches.append(args)
+
+
+@pytest.fixture
+def env():
+    storage = FakeStorage()
+    stop = threading.Event()
+    sock = srv.create_server_socket("127.0.0.1", 0)
+    port = sock.getsockname()[1]
+    t = threading.Thread(target=srv.serve_forever, args=(sock, storage, stop), daemon=True)
+    t.start()
+    yield port, storage
+    stop.set()
+    t.join(timeout=3)
+    sock.close()
+
+
+class Client:
+    def __init__(self, port):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+        self.buf = b""
+
+    def send_raw(self, data: bytes):
+        self.sock.sendall(data)
+
+    def send(self, msg):
+        self.send_raw(encode(msg))
+
+    def recv(self):
+        while b"\n" not in self.buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Server đã đóng kết nối")
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        return json.loads(line)
+
+    def close(self):
+        self.sock.close()
+
+
+def registered_client(port, agent_id="PC-01"):
+    c = Client(port)
+    c.send(make_register(agent_id, "host", "10.0.0.1", "Linux"))
+    assert c.recv() == {"type": MsgType.ACK, "status": "ok"}
+    return c
+
+
+def test_register_gets_ack_and_is_saved(env):
+    port, storage = env
+    c = registered_client(port)
+    assert storage.agents[0][:4] == ("PC-01", "host", "10.0.0.1", "Linux")
+    c.close()
+
+
+def test_heartbeat_and_metrics_get_ack_and_are_saved(env):
+    port, storage = env
+    c = registered_client(port)
+    c.send(make_heartbeat("PC-01"))
+    assert c.recv()["type"] == MsgType.ACK
+    c.send(make_metrics("PC-01", 35.2, 61, 70.5))
+    assert c.recv()["type"] == MsgType.ACK
+    assert storage.metrics[0][:4] == ("PC-01", 35.2, 61, 70.5)
+    assert len(storage.touches) == 2
+    c.close()
+
+
+def test_invalid_json_returns_error_and_keeps_connection(env):
+    port, _ = env
+    c = registered_client(port)
+    c.send_raw(b"day khong phai json\n")
+    assert c.recv()["type"] == MsgType.ERROR
+    c.send(make_heartbeat("PC-01"))  # kết nối vẫn dùng được
+    assert c.recv()["type"] == MsgType.ACK
+    c.close()
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"type": "HEARTBEAT", "agent_id": "PC-01"}\n',        # thiếu timestamp
+    b'{"type": "XYZ"}\n',                                    # loại lạ
+    b'[1, 2, 3]\n',                                          # không phải object
+    b'{"type": []}\n',                                       # type không hash được
+    b'{"type": "ACK", "status": "ok"}\n',                    # sai chiều
+    b'{"type": "METRICS", "agent_id": "PC-01", "cpu": 150, "ram": 1, "disk": 1, "timestamp": 1}\n',
+    b'{"type": "METRICS", "agent_id": "PC-01", "cpu": "x", "ram": 1, "disk": 1, "timestamp": 1}\n',
+    b'{"type": "METRICS", "agent_id": "PC-01", "cpu": NaN, "ram": 1, "disk": 1, "timestamp": 1}\n',
+    b'{"type": "HEARTBEAT", "agent_id": "PC-01", "timestamp": "abc"}\n',
+    b'{"type": "HEARTBEAT", "agent_id": "PC-99", "timestamp": 1}\n',  # agent_id không khớp
+])
+def test_bad_messages_return_error(env, raw):
+    port, storage = env
+    c = registered_client(port)
+    c.send_raw(raw)
+    assert c.recv()["type"] == MsgType.ERROR
+    assert storage.metrics == []
+    c.close()
+
+
+def test_data_before_register_is_rejected(env):
+    port, storage = env
+    c = Client(port)
+    c.send(make_metrics("PC-01", 1, 2, 3))
+    assert c.recv()["type"] == MsgType.ERROR
+    assert storage.metrics == []
+    c.close()
+
+
+def test_two_messages_in_one_packet_and_split_packet(env):
+    port, _ = env
+    c = registered_client(port)
+    c.send_raw(encode(make_heartbeat("PC-01")) + encode(make_metrics("PC-01", 1, 2, 3)))
+    assert c.recv()["type"] == MsgType.ACK
+    assert c.recv()["type"] == MsgType.ACK
+    raw = encode(make_heartbeat("PC-01"))
+    c.send_raw(raw[:10])
+    c.send_raw(raw[10:])
+    assert c.recv()["type"] == MsgType.ACK
+    c.close()
+
+
+def test_bad_line_does_not_drop_good_lines_in_same_packet(env):
+    port, storage = env
+    c = registered_client(port)
+    c.send_raw(encode(make_metrics("PC-01", 1, 2, 3)) + b"rac\n" + encode(make_heartbeat("PC-01")))
+    assert [c.recv()["type"] for _ in range(3)] == [MsgType.ACK, MsgType.ERROR, MsgType.ACK]
+    assert len(storage.metrics) == 1
+    c.close()
+
+
+def test_abrupt_disconnect_does_not_kill_server(env):
+    port, _ = env
+    c = registered_client(port)
+    c.send_raw(b'{"type": "HEART')  # nửa tin nhắn rồi cắt
+    c.close()
+    c2 = registered_client(port, "PC-02")  # Server vẫn nhận Agent khác
+    c2.close()
+
+
+def test_multiple_agents_concurrently(env):
+    port, storage = env
+    clients = [registered_client(port, f"PC-{i}") for i in range(5)]
+    for i, c in enumerate(clients):
+        c.send(make_metrics(f"PC-{i}", i, i, i))
+    for c in clients:
+        assert c.recv()["type"] == MsgType.ACK
+        c.close()
+    assert len(storage.metrics) == 5
+
+
+def test_storage_failure_returns_error_and_keeps_connection(env):
+    port, storage = env
+    c = registered_client(port)
+    storage.fail = True
+    c.send(make_metrics("PC-01", 1, 2, 3))
+    assert c.recv()["type"] == MsgType.ERROR
+    storage.fail = False
+    c.send(make_metrics("PC-01", 1, 2, 3))
+    assert c.recv()["type"] == MsgType.ACK
+    c.close()
+
+
+def test_oversized_message_without_newline_closes_connection(env):
+    port, _ = env
+    c = registered_client(port)
     try:
-        yield server
+        c.send_raw(b"x" * (srv.MAX_MESSAGE_SIZE + 5000))
+        # Linux: nhận được ERROR. Windows: có thể bị reset trước khi nhận được.
+        assert c.recv()["type"] == MsgType.ERROR
+    except (ConnectionError, OSError):
+        pass
+    with pytest.raises((ConnectionError, OSError)):
+        c.recv()  # Kết nối đã bị Server đóng
+    c.close()
+    registered_client(port, "PC-02").close()  # Server vẫn phục vụ Agent khác
+
+
+def test_port_in_use_raises_oserror():
+    s1 = srv.create_server_socket("127.0.0.1", 0)
+    port = s1.getsockname()[1]
+    try:
+        with pytest.raises(OSError):
+            srv.create_server_socket("127.0.0.1", port)
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        s1.close()
 
 
-def connect(server):
-    sock = socket.create_connection(server.server_address, timeout=2)
-    sock.settimeout(2)
-    reader = sock.makefile("rb")
-    return sock, reader
-
-
-def read_response(reader):
-    line = reader.readline()
-    assert line, "server closed before returning a response"
-    return decode(line.rstrip(b"\n"))
-
-
-def test_server_defaults_use_shared_host_and_port():
-    assert create_server.__defaults__[:2] == (SERVER_HOST, SERVER_PORT)
-    assert SERVER_PORT == 9000
-
-
-def test_register_heartbeat_and_metrics_are_acked_and_handed_off():
-    received = []
-    with running_server(lambda message, peer, received_at: received.append(
-        (message, peer, received_at)
-    )) as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("PC-01", "host", "10.0.0.1", "Windows")))
-            assert read_response(reader) == {"type": MsgType.ACK, "status": "ok"}
-
-            sock.sendall(encode(make_heartbeat("PC-01")))
-            assert read_response(reader) == {"type": MsgType.ACK, "status": "ok"}
-
-            sock.sendall(encode(make_metrics("PC-01", 10.5, 20, 99.9)))
-            assert read_response(reader) == {"type": MsgType.ACK, "status": "ok"}
-
-        assert [row[0]["type"] for row in received] == [
-            MsgType.REGISTER,
-            MsgType.HEARTBEAT,
-            MsgType.METRICS,
-        ]
-        assert all(row[2] > 0 for row in received)
-        assert all(row[1][0] == "127.0.0.1" for row in received)
-
-
-def test_fragmented_frames_across_recv_calls_are_reassembled():
-    register = encode(make_register("A", "host", "127.0.0.1", "Windows"))
-    chunks = [register[:10], register[10:] + encode(make_heartbeat("A"))]
-    responses = []
-
-    class ChunkedConnection:
-        def recv(self, size):
-            return chunks.pop(0) if chunks else b""
-
-        def sendall(self, data):
-            responses.append(data)
-
-    handle_client(ChunkedConnection(), ("127.0.0.1", 12345))
-
-    assert [decode(response.rstrip(b"\n"))["type"] for response in responses] == [
-        MsgType.ACK,
-        MsgType.ACK,
-    ]
-
-
-def test_concatenated_frames_are_processed_in_order():
-    with running_server() as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ACK
-
-            # Multiple protocol frames sent in one TCP write.
-            sock.sendall(encode(make_heartbeat("A")) + encode(make_metrics("A", 1, 2, 3)))
-            assert read_response(reader)["type"] == MsgType.ACK
-            assert read_response(reader)["type"] == MsgType.ACK
-
-
-def test_invalid_json_and_missing_fields_return_errors_without_losing_next_frame():
-    with running_server() as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            register = encode(make_register("A", "host", "127.0.0.1", "Windows"))
-            sock.sendall(register + b'{"type":"HEARTBEAT","agent_id":"A"}\n')
-            assert read_response(reader)["type"] == MsgType.ACK
-            assert read_response(reader)["type"] == MsgType.ERROR
-
-            # A malformed frame followed by a valid one in the same write.
-            sock.sendall(b'{"type":]\n' + encode(make_heartbeat("A")))
-            error = read_response(reader)
-            assert error["type"] == MsgType.ERROR
-            assert "JSON" in error["message"]
-            assert read_response(reader)["type"] == MsgType.ACK
-
-
-def test_json_with_non_string_type_returns_error_and_connection_recovers():
-    with running_server() as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(b'{"type":[]}\n' + encode(
-                make_register("A", "host", "127.0.0.1", "Windows")
-            ))
-            error = read_response(reader)
-            assert error["type"] == MsgType.ERROR
-            assert "type" in error["message"]
-            assert read_response(reader)["type"] == MsgType.ACK
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        {"type": MsgType.METRICS, "agent_id": "A", "cpu": 101, "ram": 1, "disk": 1, "timestamp": 1},
-        {"type": MsgType.METRICS, "agent_id": "A", "cpu": True, "ram": 1, "disk": 1, "timestamp": 1},
-        {"type": MsgType.HEARTBEAT, "agent_id": "A", "timestamp": -1},
-        {"type": MsgType.HEARTBEAT, "agent_id": "B", "timestamp": 1},
-    ],
-)
-def test_invalid_values_or_wrong_client_id_return_error(message):
-    with running_server() as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ACK
-            sock.sendall((json.dumps(message) + "\n").encode("utf-8"))
-            assert read_response(reader)["type"] == MsgType.ERROR
-
-
-def test_agent_must_register_before_heartbeat_but_can_recover():
-    with running_server() as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_heartbeat("A")))
-            assert read_response(reader)["type"] == MsgType.ERROR
-            sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ACK
-
-
-def test_callback_failure_returns_error_and_does_not_ack():
-    def fail_handler(message, peer, received_at):
-        raise RuntimeError("database unavailable")
-
-    with running_server(fail_handler) as server:
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ERROR
-
-
-def test_multiple_agents_are_served_concurrently():
-    rendezvous = threading.Barrier(3)
-
-    def wait_for_all_agents(message, peer, received_at):
-        if message["type"] == MsgType.REGISTER:
-            rendezvous.wait(timeout=3)
-
-    with running_server(wait_for_all_agents) as server:
-        errors = []
-
-        def client(agent_id):
-            try:
-                sock, reader = connect(server)
-                with sock, reader:
-                    sock.sendall(encode(make_register(
-                        agent_id, "host", "127.0.0.1", "Windows"
-                    )))
-                    assert read_response(reader)["type"] == MsgType.ACK
-            except Exception as exc:  # surfaced in the test thread below
-                errors.append(exc)
-
-        clients = [threading.Thread(target=client, args=(f"A-{i}",)) for i in range(3)]
-        for thread in clients:
-            thread.start()
-        for thread in clients:
-            thread.join(timeout=5)
-
-        assert not any(thread.is_alive() for thread in clients)
-        assert errors == []
-
-
-def test_disconnect_does_not_prevent_server_from_serving_another_client():
-    with running_server() as server:
-        disconnected, reader = connect(server)
-        reader.close()
-        disconnected.close()
-
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("B", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ACK
-
-
-def test_socket_reset_does_not_prevent_server_from_serving_another_client():
-    with running_server() as server:
-        reset_sock, reader = connect(server)
-        reset_sock.sendall(encode(make_register("A", "host", "127.0.0.1", "Windows")))
-        assert read_response(reader)["type"] == MsgType.ACK
-
-        # SO_LINGER with a zero timeout closes with RST rather than FIN.
-        linger = struct.pack("hh", 1, 0) if os.name == "nt" else struct.pack("ii", 1, 0)
-        reset_sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
-        reader.close()
-        reset_sock.close()
-
-        sock, reader = connect(server)
-        with sock, reader:
-            sock.sendall(encode(make_register("B", "host", "127.0.0.1", "Windows")))
-            assert read_response(reader)["type"] == MsgType.ACK
+def test_load_storage_falls_back_to_null_when_no_db_module():
+    assert isinstance(srv.load_storage(), srv.NullStorage)
