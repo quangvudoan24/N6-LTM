@@ -32,7 +32,7 @@ Dự án xây dựng hệ thống giám sát thiết bị mạng theo mô hình 
 
 5. Thành viên
 
-Dự án được thực hiện bởi nhóm 6 thành viên trong môn Lập trình mạng.
+Dự án được thực hiện bởi nhóm 5 thành viên trong môn Lập trình mạng.
 
 6. Trạng thái
 
