@@ -1,21 +1,19 @@
-# Thiết kế cơ sở dữ liệu SQLite – Issue #3, tuần 1
+# Hướng dẫn SQLite và API truy vấn — TV4 Week 3
 
-**Trạng thái:** Thiết kế tuần 1 đã được triển khai cho khởi tạo cơ sở dữ liệu và các thao tác Agent/metrics trong `database/operations.py`.
+**Trạng thái:** Schema SQLite, khởi tạo DB, lưu Agent/metrics, callback TCP → SQLite và các API truy vấn cơ bản đã được triển khai. Dashboard UI chưa có trong repository hiện tại.
 
 ## 1. Mục tiêu và phạm vi
 
-Cơ sở dữ liệu lưu thông tin các máy Agent, lịch sử sử dụng tài nguyên và sự kiện trạng thái/cảnh báo để Server ghi nhận và Dashboard truy vấn.
-
-Thiết kế này lấy [`database/schema.sql`](../database/schema.sql) làm baseline hiện có, đối chiếu với [`docs/PROTOCOL.md`](PROTOCOL.md) và dữ liệu Agent trong nhánh `feature/agent-data`. Thay đổi cấu trúc cần được đối chiếu với giao thức và thống nhất trong nhóm.
+Cơ sở dữ liệu lưu thông tin thiết bị trong `agents` và mẫu CPU/RAM/Disk trong `metrics`. Schema cũng có bảng `events`. Schema vận hành nằm trong [`database/schema.sql`](../database/schema.sql).
 
 ## 2. Dữ liệu đi từ Agent vào DB
 
 | Bản tin | Trường từ giao thức | Nơi lưu dự kiến | Ghi chú |
 |---|---|---|---|
-| `REGISTER` | `agent_id`, `hostname`, `ip`, `os` | Thêm/cập nhật `agents` | `ip` trong JSON ánh xạ sang `ip_address`; tạo `created_at` và status ban đầu. Theo quyết định triển khai TV4, REGISTER lần đầu để `last_seen` là `NULL`, đăng ký lại giữ nguyên thời điểm Heartbeat gần nhất. |
-| `HEARTBEAT` | `agent_id`, `timestamp` | Cập nhật `agents.last_seen` | Ghi thời điểm Server nhận Heartbeat hợp lệ (`received_at`) để tránh lệch đồng hồ; không dùng timestamp của Agent làm `last_seen`. Quy tắc chuyển `status` cần phối hợp với cơ chế Heartbeat. |
-| `METRICS` | `agent_id`, `cpu`, `ram`, `disk`, `timestamp` | Thêm một hàng vào `metrics` | Nhánh Agent hiện thu thập CPU, RAM, Disk theo phần trăm; giao thức quy định giá trị 0–100 và `timestamp` Unix giây. Lưu metrics không đổi `last_seen`. |
-| Sự kiện Server | `event_type`, `message`, thời điểm ghi nhận | Thêm một hàng vào `events` | Ví dụ: trạng thái chuyển ONLINE/WARNING/OFFLINE hoặc vượt ngưỡng CPU/RAM/Disk. Các mã sự kiện đã có trong `common/constants.py`. |
+| `REGISTER` | `agent_id`, `hostname`, `ip`, `os` | Thêm/cập nhật `agents` | JSON `ip` ánh xạ sang `ip_address`. Server đặt status ban đầu `ONLINE`; REGISTER không ghi `last_seen`. Mỗi TCP connection chỉ REGISTER một lần; reconnect dùng connection mới và có thể đăng ký lại cùng `agent_id`. |
+| `HEARTBEAT` | `agent_id`, `timestamp` | Cập nhật `agents.status` và `agents.last_seen` | Server dùng thời điểm xử lý hợp lệ của mình (`received_at`) cho `last_seen`, không dùng timestamp của Agent. Status được đặt `ONLINE`. Bản tin hợp lệ không nhận ACK thành công. |
+| `METRICS` | `agent_id`, `cpu`, `ram`, `disk`, `timestamp` | Thêm một hàng vào `metrics` | `timestamp` là thời điểm mẫu do Agent gửi. Lưu mẫu không đổi `last_seen` hoặc status; bản tin hợp lệ không nhận ACK thành công. |
+| Events | — | Bảng `events` có trong schema | Server hiện chưa triển khai luồng ghi events hoặc API Python tương ứng. Các câu SQL events trong `database/queries.sql` chỉ là truy vấn mẫu. |
 
 ## 3. Mô hình và quan hệ
 
@@ -94,7 +92,8 @@ erDiagram
 - Schema bật `PRAGMA foreign_keys = ON`.
 - `idx_metrics_agent_time(agent_id, timestamp)` hỗ trợ lấy lịch sử metrics của một máy theo thời gian.
 - `idx_events_time(timestamp DESC)` hỗ trợ lấy event mới nhất.
-- Các truy vấn mẫu cho Dashboard và dọn metrics theo thời hạn lưu trữ nằm trong [`database/queries.sql`](../database/queries.sql). Placeholder dùng `?`, không nối chuỗi SQL.
+- Các truy vấn SQL mẫu nằm trong [`database/queries.sql`](../database/queries.sql). Module Python hiện cung cấp `list_agents`, `get_agent_status` và `get_metrics`, không có API truy vấn đếm status hoặc dọn metrics.
+- Câu lệnh xóa metrics cũ trong `queries.sql` không tự chạy; Server hiện không có tác vụ retention.
 
 ## 6. DDL minh họa theo schema hiện có
 
@@ -140,58 +139,67 @@ CREATE INDEX IF NOT EXISTS idx_events_time
     ON events(timestamp DESC);
 ```
 
-## 7. Điểm cần nhóm thống nhất khi review
+## 7. Giới hạn và quy ước implementation hiện tại
 
-1. `docs/PROTOCOL.md` yêu cầu `REGISTER` có `ip` và `os`, nhưng schema hiện cho phép `agents.ip_address` và `agents.os` là `NULL`.
-2. Giao thức yêu cầu `METRICS` có đủ `cpu`, `ram`, `disk`, trong khi ba cột này hiện cho phép `NULL`. Module SQLite từ chối các giá trị thiếu hoặc ngoài khoảng trước khi ghi; Server cần xác thực payload trước khi gọi module. Thay đổi ràng buộc schema cần được nhóm thống nhất.
-3. Trong phạm vi module TV4 tuần 2, `last_seen` là thời điểm Server nhận Heartbeat hợp lệ: REGISTER lần đầu để `NULL`, REGISTER lặp lại giữ nguyên, Heartbeat cập nhật bằng `received_at`. Đây là quyết định triển khai TV4, không khẳng định toàn nhóm đã thống nhất. `metrics.timestamp` dùng timestamp mẫu Agent gửi; `events.timestamp` dùng thời điểm Server ghi nhận event.
-4. `events.event_type` chưa có CHECK constraint. Ứng dụng nên dùng tập hằng số trong `common/constants.py`; việc thêm ràng buộc DB cần thống nhất trong nhóm.
-5. `database/queries.sql` đề xuất dọn metrics cũ hơn 7 ngày theo `METRICS_RETENTION_DAYS`; đây là chính sách lưu trữ để nhóm xác nhận, không phải thao tác triển khai của tài liệu tuần 1.
+1. Schema cho phép `agents.ip_address` và `agents.os` là `NULL`, dù các API ghi ứng dụng hiện yêu cầu chuỗi không rỗng.
+2. Schema cho phép CPU/RAM/Disk trong `metrics` là `NULL`; API `save_metrics()` kiểm tra giá trị do ứng dụng ghi và từ chối thiếu hoặc ngoài 0–100. Dữ liệu ghi trực tiếp hoặc cũ vẫn có thể có `NULL`.
+3. Server chỉ cập nhật `last_seen` khi nhận HEARTBEAT hợp lệ, dùng thời điểm Server `received_at`. REGISTER và METRICS không ghi đè trường này; `metrics.timestamp` giữ timestamp mẫu Agent gửi.
+4. Schema không có CHECK constraint cho `events.event_type`.
+5. `database/queries.sql` có câu lệnh dọn metrics cũ theo mốc thời gian, nhưng Server không tự chạy lệnh này.
 
 ## 8. Sử dụng module SQLite
 
-Từ thư mục gốc repository, khởi tạo DB theo `DB_PATH`:
+Từ thư mục gốc repository, khởi tạo DB theo `DB_PATH` (`database/monitor.db`, tương đối với thư mục chạy):
 
 ```powershell
 python -m database.init_db
 ```
 
-`init_db()` có thể chạy lại mà không xóa dữ liệu. Mỗi hàm trong `database/operations.py` tự mở và đóng connection; khóa ngoại được bật cho từng connection. Cách này cho phép các callback của nhiều kết nối Server gọi module cùng lúc mà không dùng chung một đối tượng SQLite.
+`init_db()` tạo thư mục cha nếu cần và có thể chạy lại mà không xóa dữ liệu. `server.main()` gọi `init_db()` trước khi mở socket. Mỗi thao tác ghi/truy vấn trong `database/operations.py` tự mở/đóng connection và bật khóa ngoại trên connection đó. SQLite lỗi được bọc thành `DatabaseError`.
 
 ```python
-from database.operations import (
-    get_agent_status,
-    get_metrics,
-    handle_server_message,
-    list_agents,
-    register_agent,
-    save_metrics,
-    update_agent,
-)
+from database.init_db import init_db
+from database.operations import get_agent_status, get_metrics, list_agents
 
-register_agent("PC-01", "workstation", "192.168.1.10", "Windows")
-update_agent("PC-01", status="WARNING", last_seen=1760000010)
-save_metrics("PC-01", 35.2, 61.0, 70.5, 1760000005)
-
-agents = list_agents()                 # Có thể lọc: list_agents(status="ONLINE")
-status = get_agent_status("PC-01")
-history = get_metrics("PC-01", limit=50)  # Mới nhất trước
+db_path = init_db()
+agents = list_agents(db_path=db_path, status="ONLINE")
+status = get_agent_status("PC-01", db_path=db_path)
+history = get_metrics("PC-01", limit=50, db_path=db_path)  # Mới nhất trước
+latest = get_metrics("PC-01", limit=1, db_path=db_path)
 ```
 
-`register_agent` thêm thiết bị hoặc cập nhật thiết bị đã đăng ký mà vẫn giữ `created_at`. `update_agent` chỉ đổi các trường được truyền vào và báo `LookupError` nếu không tìm thấy Agent. `save_metrics` yêu cầu Agent đã tồn tại; lỗi khóa ngoại hoặc lỗi SQLite được bọc trong `DatabaseError`. Dữ liệu không hợp lệ bị từ chối bằng `ValueError`.
+### API ghi dữ liệu
+
+- `register_agent(agent_id, hostname, ip_address, os_name, *, status=Status.ONLINE, db_path=DB_PATH)` thêm Agent hoặc cập nhật hostname/IP/OS/status của Agent đã có. Khi cập nhật, `created_at` và `last_seen` được giữ nguyên.
+- `update_agent(agent_id, *, hostname=None, ip_address=None, os_name=None, status=None, last_seen=None, db_path=DB_PATH)` chỉ cập nhật các trường được truyền khác `None`; báo `LookupError` nếu Agent không tồn tại và `ValueError` nếu không có trường cập nhật.
+- `save_metrics(agent_id, cpu, ram, disk, timestamp, *, db_path=DB_PATH)` chèn một mẫu. Agent phải tồn tại; CPU/RAM/Disk phải là số trong khoảng 0–100; timestamp phải là Unix integer không âm trong giới hạn signed 64-bit của SQLite.
+
+Dữ liệu đầu vào không hợp lệ bị từ chối bằng `ValueError`; lỗi SQLite được bọc trong `DatabaseError`.
+
+### API truy vấn
+
+| API | Tham số | Kết quả |
+|---|---|---|
+| `list_agents(status=None, *, db_path=DB_PATH)` | `status: str \| None`; nếu có thì một trong `ONLINE`, `WARNING`, `OFFLINE` | Runtime trả `list[dict]`, sắp xếp theo `hostname`, rồi `agent_id`. Các trường: `agent_id: str`, `hostname: str`, `ip_address: str \| None`, `os: str \| None`, `status: str`, `last_seen: int \| None`, `created_at: int`. |
+| `get_agent_status(agent_id, *, db_path=DB_PATH)` | `agent_id: str` không rỗng | `str` status hiện tại, hoặc `None` nếu không có Agent đó. |
+| `get_metrics(agent_id, limit=50, *, db_path=DB_PATH)` | `agent_id: str` không rỗng; `limit: int` dương, mặc định 50 | Runtime trả `list[dict]` gồm `cpu`, `ram`, `disk`, `timestamp`, sắp xếp mới nhất trước theo `timestamp DESC, id DESC`. Các cột tài nguyên là số SQLite `REAL` (đọc thành `float`) hoặc `None`; `timestamp: int`. Trả `[]` nếu chưa có mẫu. |
+
+Để lấy mẫu mới nhất của một Agent, gọi `get_metrics(agent_id, limit=1)` rồi dùng phần tử đầu tiên nếu danh sách không rỗng. API hiện không có truy vấn batch lấy latest metrics của mọi Agent hoặc lọc history theo khoảng ngày. Với biểu đồ cần thứ tự cũ → mới, consumer có thể đảo danh sách trả về trước khi vẽ. Các cột tài nguyên trong schema cho phép `NULL`, nên consumer cần chịu được dữ liệu cũ/ghi trực tiếp có giá trị rỗng.
 
 Timestamp ghi vào SQLite phải là số nguyên Unix không âm và nằm trong miền signed 64-bit của SQLite.
 
-## 9. Điểm bàn giao cho TCP Server
+## 9. Luồng Server → SQLite → consumer
 
-`handle_server_message(message, peer_address, received_at)` có thể được truyền làm callback cho Server có cùng giao diện. REGISTER thêm/cập nhật thông tin và status ONLINE ban đầu nhưng không đặt hoặc ghi đè `last_seen`; HEARTBEAT cập nhật `last_seen` bằng `received_at`; METRICS chỉ thêm mẫu và không đổi `last_seen`. `peer_address` được nhận để khớp giao diện callback; địa chỉ Agent lấy từ trường `ip` của REGISTER.
+`server.main()` khởi tạo DB trước khi lắng nghe TCP. Với mỗi frame hợp lệ, Server xác thực message, lấy `received_at` trong vùng đồng bộ, rồi gọi `handle_server_message(message, peer_address, received_at)`. Callback nhận các loại `REGISTER`, `HEARTBEAT`, `METRICS`:
 
-Quy ước `last_seen` trên là quyết định của TV4 cho phạm vi tuần 2, không phải xác nhận rằng toàn nhóm đã thống nhất. Module giữ status ban đầu ONLINE khi REGISTER; cơ chế chuyển ONLINE/WARNING/OFFLINE thuộc phần Heartbeat cần phối hợp riêng. Callback đã được kiểm thử trực tiếp, nhưng chưa xác nhận Server/Agent đã được tích hợp hoặc chạy end-to-end.
+1. REGISTER: callback upsert thông tin thiết bị và status ban đầu ONLINE, không đặt `last_seen`. Sau khi callback thành công, Server cài generation/mốc REGISTER trong bộ nhớ rồi trả ACK. Nếu lưu DB lỗi, Server trả ERROR và không trả ACK.
+2. HEARTBEAT: callback đặt status ONLINE và `last_seen = received_at`; Server không trả ACK thành công.
+3. METRICS: callback thêm CPU/RAM/Disk với timestamp của Agent; không đổi `last_seen` hay status, và Server không trả ACK thành công.
 
-Các API truy vấn trả về danh sách `dict`, phù hợp để Server hoặc Dashboard chuyển tiếp. Module chưa tự dọn metrics cũ; chính sách retention trong `database/queries.sql` vẫn cần nhóm xác nhận.
+Các lỗi validation hoặc SQLite được Server phản hồi ERROR. Callback SQLite mở connection riêng cho mỗi thao tác. Status được đặt ONLINE ban đầu bởi REGISTER, đặt lại ONLINE bởi HEARTBEAT và được monitor cập nhật theo tuổi tín hiệu.
+
+Dashboard UI chưa có implementation trong repository hiện tại. Các API truy vấn ở trên cung cấp danh sách thiết bị/trạng thái và history theo từng thiết bị; tài liệu này không khẳng định có consumer Dashboard đang chạy.
 
 ### Kiểm thử
 
-```powershell
-python -m pytest -q -p no:cacheprovider tests/test_database.py
-```
+Từ thư mục gốc repository, chạy toàn bộ test bằng `python -B -m pytest -q -p no:cacheprovider tests`. Bộ test tích hợp dùng TCP loopback và SQLite tạm.

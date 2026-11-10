@@ -184,12 +184,14 @@ def test_server_callback_stores_register_metrics_and_heartbeat_time(db_path):
         ("10.0.0.1", 5000), 100, db_path=db_path,
     )
     assert list_agents(db_path=db_path)[0]["last_seen"] is None
+    update_agent("A", status=Status.WARNING, db_path=db_path)
 
     handle_server_message(
         {"type": MsgType.HEARTBEAT, "agent_id": "A", "timestamp": 101},
         ("10.0.0.1", 5000), 102, db_path=db_path,
     )
     assert list_agents(db_path=db_path)[0]["last_seen"] == 102
+    assert get_agent_status("A", db_path=db_path) == Status.ONLINE
 
     handle_server_message(
         {"type": MsgType.METRICS, "agent_id": "A", "cpu": 1, "ram": 2,

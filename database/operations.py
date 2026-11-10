@@ -236,7 +236,10 @@ def handle_server_message(
     elif message_type == MsgType.HEARTBEAT:
         _timestamp(message.get("timestamp"), "timestamp")
         update_agent(
-            message.get("agent_id"), last_seen=received_at, db_path=db_path
+            message.get("agent_id"),
+            status=Status.ONLINE,
+            last_seen=received_at,
+            db_path=db_path,
         )
     elif message_type == MsgType.METRICS:
         save_metrics(
